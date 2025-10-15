@@ -1,4 +1,12 @@
-Official implementation for paper "[Efficient Length-Generalizable Attention via Causal Retrieval for Long-Context Language Modeling](https://arxiv.org/abs/2410.01651)" (ICML 2025)
+
+### Milestones
+"[Efficient Length-Generalizable Attention via Causal Retrieval for Long-Context Language Modeling](https://arxiv.org/abs/2410.01651)" (ICML 2025) [link](https://github.com/ant-research/long-context-modeling/tree/GCA)
+
+Achieved 1000x extrapolation, but limited by the inability to retrieve every token—only able to retrieve once every S tokens. Random access capability is not flexible enough.
+
+"[Hardware-aligned Hierarchical Sparse Attention for Efficient Long-term Memory Access](https://arxiv.org/abs/2504.16795)" (NeurIPS 2025) (Code will be released soon)
+
+Token-by-token retrieval has been achieved, but its extrapolation ability is not as strong as GCA. We recently found that combining it with a short sliding window instead of Mamba yields stronger extrapolation capability.
 
 ### Model Architecture
 <img src="figures/gca_model_arch.png" width="800">
@@ -12,6 +20,7 @@ During backpropagation (BP), the weights of past chunks that better facilitate t
 
 <!--The critical aspect is that tokens in c7 perform cross-attention with each retrieved chunk to obtain chunk-level information. Finally, this information is fused using weights derived from a softmax over the retrieval scores, allowing the retrieval scores to participate in the forward process and making it differentiable.
 -->
+
 ### Results
 
 <img src="figures/key_results.png" width="800">
