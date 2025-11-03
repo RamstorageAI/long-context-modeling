@@ -69,28 +69,22 @@ def preprocess_cnn(data_dir, tokenizer, output_path, eos_token_id):
 
 
 if __name__ == '__main__':
-    tokenizer = tiktoken.get_encoding("gpt2")
-    gpt_tokenizer = AutoTokenizer.from_pretrained("config/gpt2-small")
+    # tokenizer = tiktoken.get_encoding("gpt2")
+    # gpt_tokenizer = AutoTokenizer.from_pretrained("config/gpt2-small")
+    gpt_tokenizer = AutoTokenizer.from_pretrained("configs/gpt-neox-20b")
     eos_token_id = gpt_tokenizer.eos_token_id
     assert eos_token_id is not None
 
-    path_to_dir = ''  # fill in the path to directory containing the training corpus
-    
-    preprocess_xsum(
-        f'{path_to_dir}/train', 
-        tokenizer,
-        f'{path_to_dir}/train.pkl',
-        eos_token_id
-    )
-    preprocess_xsum(
-        f'{path_to_dir}/dev', 
-        tokenizer,
-        f'{path_to_dir}/dev.pkl',
-        eos_token_id
-    )
-    preprocess_xsum(
-        f'{path_to_dir}/test', 
-        tokenizer,
-        f'{path_to_dir}/test.pkl', 
-        eos_token_id
-    )
+    # preprocess_xsum(
+    #     'raw_xsum/test', 
+    #     gpt_tokenizer,
+    #     'raw_xsum_neox/test.pkl',
+    #     eos_token_id
+    # )
+
+    # preprocess_cnn(
+    #     'raw_cnn/dev', 
+    #     gpt_tokenizer,
+    #     'cnn/dev.pkl',
+    #     eos_token_id
+    # )

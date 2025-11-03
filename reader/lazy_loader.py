@@ -22,6 +22,8 @@ from itertools import accumulate
 
 import torch
 from torch.multiprocessing import Lock
+from natsort import natsorted
+from tqdm import tqdm
 
 
 def get_lazy_path(path):
@@ -136,7 +138,7 @@ class LazyLoader(object):
         data_type2.len.pkl
     """
 
-    def __init__(self, path, data_type='data', is_array=False, array_data_type=np.int32):
+    def __init__(self, path, data_type='data', is_array=False, array_data_type=np.uint16):
         datapath = os.path.join(path, data_type)
         # get file where array entries are concatenated into one big string
         self._file = open(datapath, 'rb')
@@ -147,7 +149,7 @@ class LazyLoader(object):
 
         lenpath = os.path.join(path, data_type + '.len.pkl')
         if os.path.exists(lenpath):
-            self.file = np.memmap(self.file, dtype=array_data_type, mode='r', order='C')
+            self.file = np.memmap(self.file, dtype=np.uint16, mode='r')
             lens = pkl.load(open(lenpath, 'rb'))
         else:
             self.file = np.memmap(self.file, dtype=np.uint16, mode='r')
@@ -156,7 +158,7 @@ class LazyLoader(object):
         self.lens = lens
         self.ends = list(accumulate(self.lens))
         
-        print(f"total documents: {len(self.lens)}, total tokens: {self.ends[-1]}")
+        # print(f"total documents: {len(self.lens)}, total tokens: {self.ends[-1]}")
         self.total_tokens = self.ends[-1]
         self.read_lock = Lock()
         self._tokenizer = None
@@ -192,14 +194,109 @@ class LazyLoader(object):
         """read specified portion of file"""
         data_type_size = np.dtype(self.array_data_type).itemsize
         # atomic reads to avoid race conditions with multiprocess dataloader
-        self.read_lock.acquire()
-
+        # self.read_lock.acquire()
+        if end > len(self.file):
+            """ check for mmap outbound, should not happen with current code """
+            print(f"reading end: {end}, End of mmap: {self.file.shape[0]}")
+            print(f"Mmap outbound: end {end} is not less than {self.ends[-1]}")
         rtn = self.file[start:end]
         if self.is_array:
             rtn = rtn.copy()
-        self.read_lock.release()
+        # self.read_lock.release()
         return rtn
     
     def get_text_len(self, idx):
         prev_end = self.ends[idx - 1] if idx > 0 else 0
         return self.ends[idx] - prev_end
+
+
+def _get_chunk_dirs(input_path):
+    chunk_dirs = [
+        os.path.join(input_path, d)
+        for d in os.listdir(input_path)
+        if os.path.isdir(os.path.join(input_path, d)) and d.startswith("chunk")
+    ]
+    chunk_dirs = natsorted(chunk_dirs, key=lambda x: x.lower())
+    return chunk_dirs
+
+
+class LazyChunkedLoader(object):
+    """
+    Lazy loader for a two-level directory.
+
+    All files are mmapped during initialization.
+    Example of lazy loader directory structure:
+        path
+            chunk[i]
+                *.data
+    """
+
+    def __init__(self, path, data_type='data', array_data_type=np.uint16):
+        self.array_data_type = array_data_type
+        self.is_lazy = True
+        print(f"LazyChunkedLoader: Loading {path}")
+        all_files = []
+        chunk_dirs = _get_chunk_dirs(path)
+        if len(chunk_dirs) == 0:
+            all_files = [
+                os.path.join(path, f)
+                for f in os.listdir(path)
+                if f.endswith(data_type)
+            ]
+        else:
+            for chunk_dir in _get_chunk_dirs(path):
+                files = [
+                    os.path.join(chunk_dir, f)
+                    for f in os.listdir(chunk_dir)
+                    if f.endswith(data_type)
+                ]
+                all_files.extend(natsorted(files, key=lambda x: x.lower()))
+
+        files_ptrs = []
+        files_lens = []
+
+        # mmap all files and get pointers to each file
+        for f in tqdm(all_files, desc="DataLoader: mmaping tokenized files", ncols=120):
+            try:
+                fsize = os.path.getsize(f)
+                if (fsize > 0):
+                    # print(f"mmaping file: {f}")
+                    files_ptrs.append(np.memmap(f, dtype=np.uint16, mode='r'))
+                    files_lens.append(files_ptrs[-1].shape[0])
+                    # files_lens.append(fsize // np.dtype(array_data_type).itemsize)
+                else:
+                    print(f"Warning: file {f} is empty, skipping")
+
+            except Exception as e:
+                print(f"Error: {e} in file {f}, skipping")
+
+        self.files_ptrs = files_ptrs
+        self.lens = files_lens
+        self.ends = list(accumulate(self.lens))
+        
+        print(f"total documents: {len(self.lens)}, total tokens:{self.ends[-1]}")
+        self.total_tokens = self.ends[-1]
+
+    def __getitem__(self, index):
+        """
+        return the whole file with the index
+        """
+        if not isinstance(index, slice):
+            rtn = self.files_ptrs[index][:]     # Return the whole file
+        else:
+            # No need to sample across files. A file already contains many samples.
+            raise NotImplementedError(f"Reading slice is not supported: index={index}")
+        return rtn
+
+
+    def __len__(self):
+        return len(self.ends)
+
+
+    def get_text_len(self, idx):
+        return self.lens[idx]
+        # prev_end = self.ends[idx - 1] if idx > 0 else 0
+        # return self.ends[idx] - prev_end
+
+    def file_read(self, start=0, end=None):
+        raise NotImplementedError("LazyChunkedLoader: file_read is not supported\nHint: Use LazyLoader instead.")

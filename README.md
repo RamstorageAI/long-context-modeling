@@ -8,7 +8,7 @@ Achieved 1000x extrapolation, but limited by the inability to retrieve every tok
 
 Token-by-token retrieval has been achieved, but its extrapolation ability is not as strong as GCA. We recently found that combining it with a short sliding window instead of Mamba yields stronger extrapolation capability.
 
-### Model Architecture
+### Model Architecture (To be updated for HSA)
 <img src="figures/gca_model_arch.png" width="800">
 When generating the current chunk (c7), GCA (Grouped CA) retrieves past chunks using the landmark representation of c6 to assist in token prediction for the next chunk. The key to GCA's length generalization lies in an end-to-end differentiable retrieval mechanism, which is achieved through a two-stage attention mechanism. After selecting the top-k chunks:
 
@@ -21,7 +21,7 @@ During backpropagation (BP), the weights of past chunks that better facilitate t
 <!--The critical aspect is that tokens in c7 perform cross-attention with each retrieved chunk to obtain chunk-level information. Finally, this information is fused using weights derived from a softmax over the retrieval scores, allowing the retrieval scores to participate in the forward process and making it differentiable.
 -->
 
-### Results
+### Results (To be updated for HSA)
 
 <img src="figures/key_results.png" width="800">
 All models were pre-trained on contexts of no more than 16K tokens, and all attention spans are limited to no more than 728 tokens. Our model (DRT) achieves 1000x extrapolation on the needle-in-a-haystack task, maintaining high accuracy even with 16M context length.
@@ -33,15 +33,9 @@ torch==2.4.0, transformers>=4.36.0, triton==3.0.0
 
 ### Data Preparation
 
-[ArXiv-math](https://huggingface.co/datasets/hoskinson-center/proof-pile), [PG19](https://huggingface.co/datasets/emozilla/pg19), [XSUM](https://huggingface.co/datasets/EdinburghNLP/xsum), [CNN/DailyMail](https://huggingface.co/datasets/abisee/cnn_dailymail)
-
 Before pre-training, ensure that the corpus is indexed. Pre-processing script:
 
-PG19: `python preprocess/pg19_prepare.py`
-
-ArXiv: `python preprocess/arxiv_math_prepare.py`
-
-Summarization: `python preprocess/summarization_preprocess.py`
+Pile: `python preprocess/pile_neox.py`
 
 
 
@@ -49,69 +43,12 @@ Summarization: `python preprocess/summarization_preprocess.py`
 
 Test triton kernel:
 
-`pytest ltriton/gca.py`
+`pytest ops/hsa_tritoin.py`
 
-Test DRT generation:
-
-`python -m unittest tests/generation_unittest.py`
 
 ### Pre-training
 
-`sh scripts/pretrain_pg19.sh`
-
-### Downstream tasks finetuning
-
-Summarization tasks
-
-`sh scripts/xsum_ft.sh`
-
-
-NIAH tests
-
-`sh scripts/niah_ft.sh`
-
-Please note that we have observed whether to enable `softmax_off_by_one` has an impact on the results. Therefore, when fine-tuning for the NIAH task, we use vanilla softmax by setting `enable_softmax_one` to false in the config. 
-
-### Evaluation
-
-Eval perplexity:
-
-```bash
-python slidewin_eval.py \ 
-   	 --config_path PATH_TO_YOUR_CONFIG \
-    --vocab_dir config/gpt2-small \
-    --corpus_path PATH_TO_VALID_SET \
-    --max_seq_len MAX_SEQ_LEN \
-    --stride -1 \
-    --checkpoint_path PATH_TO_YOUR_CHECKPOINT \
-    --model_type MODEL_TYPE(DRT/slide_window_lm/rpt_contriever/blk_rec_tfm/llama_with_landmark)
-```
-    
-Eval passkey-retrieval:
-
-```bash
-python slidewin_eval.py \
-    --config_path PATH_TO_YOUR_CONFIG \
-    --vocab_dir config/gpt2-small \
-    --corpus_path PATH_TO_VALID_SET \
-    --max_seq_len MAX_SEQ_LEN \
-    --passkey_retrieval single/multihop/multi \
-    --stride -1 \
-    --checkpoint_path PATH_TO_YOUR_CHECKPOINT \
-    --model_type MODEL_TYPE(DRT/slide_window_lm/rpt_contriever/blk_rec_tfm/llama_with_landmark)
-```
-    
-To evaluate the summarization task, you need to first generate the summary and then evaluate the generated results. The script for the generation part is as follows:
-
-```bash
-python eval/gen_summarization.py \
-  --model_path PATH_TO_FINETUNED_MODEL \
-  --model_type MODEL_TYPE \
-  --config_path PATH_TO_YOUR_CONFIG \
-  --vocab_dir config/gpt2-small \
-  --corpus_path /PATH_TO_PREPROCESSED_CORPUS/test.pkl \
-  --output_path /PATH_TO_OUTPUT/OUTPUT_NAME.pkl
-```
+`sh scripts/pretrain_pile/pretrain_model.sh`
 
 
 ### Contact

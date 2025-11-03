@@ -1,0 +1,20 @@
+{
+  "d_model": 2560,
+  "d_intermediate": 0,
+  "retrieval_dim": 256,
+  "num_lower_layers": 64,
+  "num_upper_layers": 0,
+  "num_upper_groups": 0,
+  "num_mamba_per_gca": 1,
+  "encoder_layers": 0,
+  "vocab_size": 50257,
+  "ssm_cfg": {
+    "layer": "Mamba2"
+  },
+  "chunk_size": 64,
+  "chunk_topk": 8,
+  "num_attention_heads": 16,
+  "num_kv_heads": 16,
+  "pad_id": 50257,
+  "lmk_encoder_layers": 0
+}

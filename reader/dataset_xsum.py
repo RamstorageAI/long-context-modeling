@@ -6,7 +6,7 @@ import numpy as np
 import math
 import random
 import json
-from utils.misc import align_spans, get_sentence_from_words
+# from utils.misc import align_spans, get_sentence_from_words
 from transformers import AutoTokenizer
 from typing import Dict, List
 import pickle
@@ -14,17 +14,6 @@ import torch.nn.functional as F
 import torch
 import os
 
-
-def insert_id_every_x_elements(arr, x, id_value):
-    num_ids_to_insert = len(arr) // x
-    
-    new_length = len(arr) + num_ids_to_insert
-    new_arr = np.empty(new_length, dtype=arr.dtype)
-    
-    new_arr[:new_length: x + 1] = id_value
-    new_arr[np.arange(new_length) % (x + 1) != 0] = arr
-    
-    return new_arr
 
 class SummarizationCollator:
     def __init__(self, max_len, max_sum_len, chunk_size=-1, pad_id=0, tokenizer=None):
@@ -56,6 +45,7 @@ class SummarizationCollator:
                 input_ids = input_ids[:(self._max_len - len(sum_ids))]
             assert len(input_ids) + len(sum_ids) <= self._max_len
             labels = np.concatenate((input_ids, sum_ids), dtype=np.int32)
+            # print(f'input: {self._tokenizer.decode(labels)}')
             labels = np.concatenate((labels, np.array((self._max_len - len(labels)) * [-100])))
             # padded_input_ids = np.concatenate(
             #     (input_ids, sum_ids, np.array([0] * (self._max_len - len(input_ids) - len(sum_ids)), dtype=np.int32)),
@@ -68,7 +58,6 @@ class SummarizationCollator:
             # mod_array = insert_id_every_x_elements(labels_list[-1], self._chunk_size, 91)
             # mod_array[mod_array < 0] = 0
             # print(f'pad id: {self._pad_id}')
-            # print(f'mod_array: {self._tokenizer.decode(mod_array)}')
         # print(padded_input_ids)
         # print(labels)
         return {"input_ids": torch.tensor(input_ids_list, dtype=torch.long), "labels": torch.tensor(labels_list, dtype=torch.long)}
@@ -101,9 +90,12 @@ class SummarizationDataset(data.Dataset):
 
 if __name__ == "__main__":
     # tokenizer = AutoTokenizer.from_pretrained("/ossfs/workspace/nas2/jipy/warpper/Generative-R2D2/data/newgpt2")
-    import tiktoken
-    tokenizer = tiktoken.get_encoding("gpt2")
-    xsumdataset = SummarizationDataset(data_dir="/ossfs/workspace/antnlp/jipengyu/data/raw_gigaword/train.pkl", tokenizer=tokenizer, eos_id=0)
+    # import tiktoken
+    # tokenizer = tiktoken.get_encoding("gpt2")
+    tokenizer = AutoTokenizer.from_pretrained("configs/gpt-neox-20b")
+    # xsumdataset = SummarizationDataset(data_dir="/ossfs/workspace/antnlp/aaron.hx/corpus/raw_gigaword/train.pkl", tokenizer=tokenizer, eos_id=0)
+    # xsumdataset = SummarizationDataset(data_dir="/ossfs/workspace/antnlp/aaron.hx/corpus/raw_xsum_neox/train.pkl", tokenizer=tokenizer, eos_id=0)
+    xsumdataset = SummarizationDataset(data_dir="/ossfs/workspace/antnlp/aaron.hx/corpus/raw_cnn/train.pkl", tokenizer=tokenizer, eos_id=0)
     lendict = {"0:200":0,"200:500":0,"500:1000":0,"1000:2000":0, '2000:3000': 0, '>3000': 0}
     maxl = -1
     totall = 0
