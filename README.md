@@ -4,22 +4,17 @@
 
 Achieved 1000x extrapolation, but limited by the inability to retrieve every token—only able to retrieve once every S tokens. Random access capability is not flexible enough.
 
-"[Hardware-aligned Hierarchical Sparse Attention for Efficient Long-term Memory Access](https://arxiv.org/abs/2504.16795)" (NeurIPS 2025) (Code will be released soon)
+"[Hardware-aligned Hierarchical Sparse Attention for Efficient Long-term Memory Access](https://arxiv.org/abs/2504.16795)" (NeurIPS 2025) 
 
-Token-by-token retrieval has been achieved, but its extrapolation ability is not as strong as GCA. We recently found that combining it with a short sliding window instead of Mamba yields stronger extrapolation capability.
+Compared to GCA, token-by-token retrieval has been achieved. But we find its extrapolation ability is not as strong as GCA. We recently found that combining it with a short sliding window instead of Mamba yields stronger extrapolation capability. 
 
-### Model Architecture (To be updated for HSA)
-<img src="figures/gca_model_arch.png" width="800">
-When generating the current chunk (c7), GCA (Grouped CA) retrieves past chunks using the landmark representation of c6 to assist in token prediction for the next chunk. The key to GCA's length generalization lies in an end-to-end differentiable retrieval mechanism, which is achieved through a two-stage attention mechanism. After selecting the top-k chunks:
+**After the release of this work, we attempted to scale up a larger model and pre-trained it on trillions of tokens. However, we find that its extrapolation capability completely disappeared. Therefore, we strongly recommend using HSA with SWA. We will soon release a tech report on the HSA+SWA-based 8BA1B MoE architecture, which maintains strong extrapolation ability (16M) even after pre-training on trillion of tokens.**
 
-In the first stage, each token in c7 performs attention with the tokens within the retrieved chunk respectively to obtain information from that chunk. Taking the example in the diagram, $x^{20}$ interacts with the tokens of the i-th retrieved chunk through attention, resulting in the corresponding output $O_{20}^i$.
+### Core idea of HSA
+<img src="figures/hsa_vs_moe.png" width="800">
+The core idea of HSA is to perform sparse attention akin to MoE.
 
-In the second stage, the softmax-normalized retrieval scores of the chunks are used as weights to perform a weighted summation of $O_{20}^i$, thereby incorporating the retrieval scores into the forward propagation process.
-
-During backpropagation (BP), the weights of past chunks that better facilitate token prediction for the next chunk will be enhanced, enabling end-to-end causal retrieval learning.
-
-<!--The critical aspect is that tokens in c7 perform cross-attention with each retrieved chunk to obtain chunk-level information. Finally, this information is fused using weights derived from a softmax over the retrieval scores, allowing the retrieval scores to participate in the forward process and making it differentiable.
--->
+Overall, we split a KV cache into fixed-length chunks, each with a summary representation. Each token retrieves top-k chunks via these summary tokens, conducts attention with tokens in each retrieved chunk separately, and then fuses the attention results based on the normalized retrieval scores. 
 
 ### Results (To be updated for HSA)
 
