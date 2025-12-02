@@ -8,18 +8,29 @@ Achieved 1000x extrapolation, but limited by the inability to retrieve every tok
 
 Compared to GCA, token-by-token retrieval has been achieved. But we find its extrapolation ability is not as strong as GCA. We recently found that combining it with a short sliding window instead of Mamba yields stronger extrapolation capability. 
 
-**After the release of this work, we attempted to scale up a larger model and pre-trained it on trillions of tokens. However, we find that its extrapolation capability completely disappeared. Therefore, we strongly recommend using HSA with SWA. We will soon release a tech report on the HSA+SWA-based 8BA1B MoE architecture, which maintains strong extrapolation ability (16M) even after pre-training on trillion of tokens.**
+**After the release of this work, we attempted to scale up a larger model and pre-trained it on trillions of tokens. However, we find that the extrapolation capability of Mamba+HSA completely disappeared. Therefore, we strongly recommend using HSA with SWA. We will soon release a tech report on the HSA+SWA-based 8BA1B MoE architecture, which maintains strong extrapolation ability (16M) even after pre-training on trillion of tokens.**
+
+
+
+The latest update:
+
+"[Every Token Counts: Generalizing 16M Ultra-Long Context in Large Language Models](https://www.arxiv.org/pdf/2511.23319)"
+
+We **scaled up** our **SWA+HSA architecture** and ran evaluations on several **benchmarks** including **RULER**. By increasing the **SWA window** to $4\text{k}$, the **in-domain** performance was able to roughly **match the baseline**. It is also able to **extrapolate** up to $16\text{M}$ on RULER. However, we observed a **decline** in HSA's **extrapolation capability** as the SWA window grew, *unless* a longer context was utilized. The reasons for this phenomenon are discussed comprehensively in our **technical report**.
+
+
 
 ### Core idea of HSA
+
 <img src="figures/hsa_vs_moe.png" width="800">
-The core idea of HSA is to perform sparse attention akin to MoE.
 
-Overall, we split a KV cache into fixed-length chunks, each with a summary representation. Each token retrieves top-k chunks via these summary tokens, conducts attention with tokens in each retrieved chunk separately, and then fuses the attention results based on the normalized retrieval scores. 
 
-### Results (To be updated for HSA)
 
-<img src="figures/key_results.png" width="800">
-All models were pre-trained on contexts of no more than 16K tokens, and all attention spans are limited to no more than 728 tokens. Our model (DRT) achieves 1000x extrapolation on the needle-in-a-haystack task, maintaining high accuracy even with 16M context length.
+### Results 
+
+![image-20251202120932014](figures\RULER_results)
+
+![image-20251202121057620](figures\benchmark)
 
 ### Environments
 torch==2.4.0, transformers>=4.36.0, triton==3.0.0
@@ -47,4 +58,4 @@ Test triton kernel:
 
 
 ### Contact
-If you encounter any problems, please feel free to contact us: aaron.hx AT antgroup.com
+If you encounter any problems, please feel free to contact us: imhuim982 AT 126.com
