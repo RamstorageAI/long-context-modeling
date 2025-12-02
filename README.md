@@ -28,9 +28,9 @@ We **scaled up** our **SWA+HSA architecture** and ran evaluations on several **b
 
 ### Results 
 
-![image-20251202120932014](figures\RULER_results)
+<img src="figures\RULER_results.png" width="800">
 
-![image-20251202121057620](figures\benchmark)
+<img src="figures\benchmark.png" width="800">
 
 ### Environments
 torch==2.4.0, transformers>=4.36.0, triton==3.0.0
