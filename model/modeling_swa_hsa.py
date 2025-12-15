@@ -14,7 +14,6 @@ from transformers.utils import (
 from transformers import LlamaConfig
 from flash_attn_interface import flash_attn_func
 from .hsa_layers import RetrievalLayer, ChunkingLayer, HSACache, HierarchicalSparseAttention, RMSNorm
-from veomni.ops import causallm_loss_function
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP as SwiGLUMLP
 from .encoder import Encoder
@@ -608,7 +607,6 @@ class DRTForCausalLM(DRTPreTrainedModel, GenerationMixin):
         self.lmk_id = config.lmk_token_id
         self.inference_segment = getattr(config, 'inference_segment', 16384)
         self.enable_flash_inference = getattr(config, 'flash_inference', False)
-        self.loss_fn = causallm_loss_function
         self.post_init()
 
     def get_output_embeddings(self):
