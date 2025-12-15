@@ -1,31 +1,17 @@
 import torch.nn as nn
 import math
 from ops.hsa_triton import HSA
+# from flash_attn.ops.rms_norm import RMSNorm
+from .swa import SlidingWindowAttention
+from liger_kernel.transformers.rms_norm import LigerRMSNorm as RMSNorm
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+ALL_LAYERNORM_LAYERS.append(RMSNorm)
 import torch.distributed as dist
 from typing import Optional
 from einops import rearrange, einsum, repeat
 import torch
 import torch.nn.functional as F
 import warnings
-
-class RMSNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-6):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
-        self.variance_epsilon = eps
-
-    def forward(self, hidden_states):
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-        variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * hidden_states.to(input_dtype)
-
-    def extra_repr(self):
-        return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
-
-ALL_LAYERNORM_LAYERS.append(RMSNorm)
 
 def softmax_off_by_one(tensor, sm_n=1.0, dim=-1):
     max_val, _ = tensor.max(dim=dim, keepdim=True)
@@ -342,11 +328,18 @@ class HierarchicalSparseAttention(nn.Module):
             self.sm_n = 1.0
         else:
             self.sm_n = 0.0
-        self.reg_lamda = getattr(config, 'reg_lamda', 0.0)
-        self.reg_C = getattr(config, 'reg_C', 50.0)
+
         self.flash_inference = getattr(config, 'flash_inference', False)
         self._offloading = getattr(config, 'offloading_to_cpu', False)
         self.enable_qk_norm = getattr(config, 'enable_qk_norm', False)
+        self.hsa_only = getattr(config, 'hsa_only', True)
+        self.skip_hsa = getattr(config, 'skip_hsa', False)
+        if not self.hsa_only:
+            self.swa_prenorm = RMSNorm(self.embed_dim)
+            self.attn = SlidingWindowAttention(config, layer_idx)
+
+        if getattr(config, 'hsa_sliding_window', None) is not None:
+            self.attn.sliding_window = config.hsa_sliding_window
 
         if self.enable_qk_norm:
             self.q_norm = RMSNorm(self.head_dim)
@@ -362,7 +355,7 @@ class HierarchicalSparseAttention(nn.Module):
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False, **factory_kwargs)
         self.o_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False, **factory_kwargs)
         self.__init_weights(config)
-        print(f'HSA config: self.sm_n: {self.sm_n}, reg_lamda: {self.reg_lamda}, l2_C: {self.reg_C}')
+        print(f'HSA config: self.sm_n: {self.sm_n}')
 
 
     def __init_weights(self, config):
@@ -385,23 +378,33 @@ class HierarchicalSparseAttention(nn.Module):
     ):
         residual = hidden_states
 
+        if not self.hsa_only:
+            # apply swa
+            o = self.attn(
+                self.swa_prenorm(hidden_states), 
+                past_key_value=None if cache_params is None else cache_params.past_key_values, 
+                position_embeddings=position_embeddings,
+            )
+            residual = hidden_states + o
+            hidden_states = residual
+
+        if self.skip_hsa:
+            return hidden_states, weights, mem_k, mem_v, landmarks, indices
+
         hidden_states = self.pre_norm(hidden_states.to(self.q_proj.weight.dtype))
         q = self.q_proj(hidden_states)
         N = q.shape[0]
 
         if cache_params is None:
             assert hidden_states.shape[1] % self.chunk_size == 0
-            # q: (N, L, (h d))
-            # print(f'batch q repr: {q[0, -4:, :4]}, hidden: {hidden_states[0, -4:, :4]}')
             q = rearrange(q, 'N L (h d)->N L h d', h=self.num_heads)
             if self.enable_qk_norm:
                 q = self.q_norm(q)
             
-            context = HSA(q, mem_k, mem_v, weights, indices, self.sm_n, self.chunk_size, None, reg_lamda=self.reg_lamda, reg_C=self.reg_C)  # (N, L, h, d)
+            context = HSA(q, mem_k, mem_v, weights, indices, self.sm_n, self.chunk_size, None)  # (N, L, h, d)
             context = rearrange(context, 'N L h d->N L (h d)')
             out = self.o_proj(context)
 
-            # print(f'has mlp? : {self._mlp is not None}')
             if self._mlp is not None and self._mlp_norm is not None:
                 h = self._mlp_norm(residual + out)
                 if self._reset_hsa_residual:
@@ -410,13 +413,14 @@ class HierarchicalSparseAttention(nn.Module):
 
             return residual + out, weights, mem_k, mem_v, landmarks, indices
         else:
+
             if weights is not None and indices is not None and (q.shape[1] == 1 or not self.flash_inference):
                 q = rearrange(q, 'N L (h d)->N L h d', h=self.num_heads)
                 if self.enable_qk_norm:
                     q = self.q_norm(q)
-
+                # print(f'q repr: {q[0, :, 0, :4]}')
                 if not self._offloading or q.shape[1] > 1:
-                    context = HSA(q, mem_k, mem_v, weights, indices, self.sm_n, self.chunk_size, None, reg_lamda=self.reg_lamda, reg_C=self.reg_C)  # (N, L, h, d)
+                    context = HSA(q, mem_k, mem_v, weights, indices, self.sm_n, self.chunk_size, None)  # (N, L, h, d)
                 else:
                     kv_mgr = cache_params.mem_mgr
                     chunk_k, chunk_v = kv_mgr.retrieve_chunks(indices.squeeze(1))  # (N, K, S, h d)
@@ -425,7 +429,7 @@ class HierarchicalSparseAttention(nn.Module):
                     # print(f'retrieved chunk k: {chunk_k.shape}')
                     indices_ = torch.arange(0, indices.shape[-1], device=indices.device)
                     indices_ = indices_.unsqueeze(0).unsqueeze(1).unsqueeze(2).expand(N, 1, self.num_kv_heads, -1).contiguous()
-                    context = HSA(q, mem_k, mem_v, weights, indices, self.sm_n, self.chunk_size, None, reg_lamda=self.reg_lamda, reg_C=self.reg_C)
+                    context = HSA(q, mem_k, mem_v, weights, indices, self.sm_n, self.chunk_size, None)
                 
                 context = rearrange(context, 'N L h d->N L (h d)')
                 out = self.o_proj(context)
@@ -435,9 +439,9 @@ class HierarchicalSparseAttention(nn.Module):
                     if self._reset_hsa_residual:
                         residual = residual + out
                     out = self._mlp(h)
-
                 return residual + out, weights, mem_k, mem_v, landmarks, indices
             else:
+                # print(f'pass gca {cache_position[0]} ~ {cache_position[0] + q.shape[1]}')
                 out = torch.zeros_like(hidden_states)
                 if self._mlp is not None and self._mlp_norm is not None:
                     h = self._mlp_norm(residual + out)
@@ -490,6 +494,8 @@ class RetrievalLayer(nn.Module):
         if self.enable_pos_decay:
             self.pos_decay = nn.Parameter(torch.zeros(1,))
 
+        print(f"is using self.chunk_topk {self.chunk_topk}, enable gumbel noise: {self.enable_gumbel_noise} ")
+        print(f'mask slide window: {self.mask_slide_window}, slide_window: {self.slide_window}')
 
         self.causal_masks = {}
         self.__init_weights(config)
@@ -500,9 +506,12 @@ class RetrievalLayer(nn.Module):
 
     def _indices_preprocess(self, indices, topk, q_indices, device, return_mask=False):
         k_indices = torch.arange(topk, device=device)
+        # print(f'q_indices shape: {q_indices.shape}, indices.shape: {indices.shape}')
         visible = (q_indices // self.chunk_size) > k_indices  # (N, C, h, K), e.g. q at 0 cannot access any chunks, q at 64 can acess the 0th chunk
+
         indices_ = indices.masked_fill(~visible, -1)
         indices_, _ = indices_.sort(dim=-1, descending=True)
+
         mask = indices_ == -1
         indices_.masked_fill_(indices_ == -1, 0)
 
@@ -539,7 +548,9 @@ class RetrievalLayer(nn.Module):
             q_emb = self.ln(self.pre_norm(x_[:, 0::self.block_q, :]))  # (N, L, d)
 
             q_emb = rearrange(q_emb, 'N C (h d)->N C h d', h=self.retrieval_heads_num)  # h: kv nums, split q emb into h_kv groups
+            # naive implementation / softmax
             per_head_dim = q_emb.shape[-1]
+            # landmakrs = rearrange(landmarks, 'N C h d-> N C (h d)')
             assert not torch.any(torch.isnan(q_emb))
             assert not torch.any(torch.isnan(landmarks))
 
@@ -550,10 +561,14 @@ class RetrievalLayer(nn.Module):
 
             N, C, _, D = scores.shape
             assert not torch.any(torch.isnan(scores))
+            # h = self.kv_num_heads
+            # scores = scores.unsqueeze(-2).repeat(1, 1, h, 1)
             
             chunk_top_k = min(scores.shape[-1], self.chunk_topk)
 
-            c_indices = torch.arange(C, device=hidden_states.device).view(1, C, 1, 1)  #  (1, C, 1, 1)
+            offset = 0
+
+            c_indices = offset + torch.arange(C, device=hidden_states.device).view(1, C, 1, 1)  #  (1, C, 1, 1)
             d_indices = 1 + torch.arange(D, device=hidden_states.device).view(1, 1, 1, D)  #  (1, 1, 1, D)
             
             if self.mask_slide_window:
@@ -561,7 +576,6 @@ class RetrievalLayer(nn.Module):
             else:
                 mask = (c_indices * self.block_q < d_indices * self.chunk_size)
             mask = mask.expand(N, -1, self.retrieval_heads_num, -1)  # (N, C, h, D)
-            # print(f'local rank: {get_parallel_state().sp_rank} : {mask}')
             noise = 0
             if self.enable_gumbel_noise and self.training:
                 noise = -torch.empty_like(
@@ -577,16 +591,20 @@ class RetrievalLayer(nn.Module):
                 indices, chunk_top_k, c_indices * self.block_q, hidden_states.device,
                 return_mask=True
             )
+            # print(f'mask: {mask}')
             scores_ = scores.gather(dim=-1, index=indices)
-            scores_.masked_fill_(mask, float('-inf'))
+            scores_.masked_fill_(mask, float('-inf'))  # (N, C, h, K)
+
             assert not torch.any(torch.isnan(scores_))
 
             if not self.enable_softmax:
+                # softplus_x = torch.where(scores_ < 15.0, torch.log1p(torch.exp(scores_)), scores_)
                 scores_ = scores_.to(torch.float32)
                 softplus_x = F.softplus(scores_, threshold=15.0)
                 assert not torch.any(torch.isnan(softplus_x))
                 softplus_x_cumsum = torch.cumsum(softplus_x, dim=-1)
                 chunk_weights = (scores_ - softplus_x_cumsum).exp()
+                # print(f'batch chunk weights: {chunk_weights}')
 
                 assert torch.all(chunk_weights.sum(dim=-1) <= 1.01), f'{chunk_weights.sum(dim=-1)}'
 
@@ -598,7 +616,8 @@ class RetrievalLayer(nn.Module):
                 scores_ = torch.where(scores_ == float('-inf'), -1e7, scores_)
                 attn_probs = torch.softmax(scores_.to(torch.float32), dim=-1)
                 chunk_weights = attn_probs.masked_fill(all_neg_inf, 0.0)
-
+                # print(chunk_weights)
+                # chunk_weights = softmax_off_by_one(scores_, dim=-1)  # N C h K
             if self.singlehead_retrieval:
                 chunk_weights = chunk_weights.repeat(1, 1, self.kv_num_heads, 1)
                 indices = indices.repeat(1, 1, self.kv_num_heads, 1)
@@ -618,8 +637,10 @@ class RetrievalLayer(nn.Module):
             q_emb = rearrange(q_emb, 'N C (h d)->N C h d', h=self.retrieval_heads_num)
             landmarks = kv_mgr.past_lmk_embeds
             padding_lens = kv_mgr.padding_lens
+            # print(f'landmarks shape: {landmarks.shape}')
             if landmarks is not None:
                 per_head_dim = q_emb.shape[-1]
+                # print(f'q_emb type: {q_emb.dtype}, lmk dtype: {landmarks.dtype}')
                 if self.enable_lmk_norm:
                     q_emb = self.lmk_q_norm(q_emb)
                     landmarks = self.lmk_k_norm(landmarks)
@@ -649,6 +670,8 @@ class RetrievalLayer(nn.Module):
 
                 scores_ = scores.gather(dim=-1, index=indices)
                 scores_.masked_fill_(mask, float('-inf'))
+                # print(f'cache_position: {cache_position[0]} decoding scores: {scores_[:, :, 0, :5]}')
+                # softplus_x = torch.where(scores_ <= 15, torch.log(1 + torch.exp(scores_)), scores_)
                 if not self.enable_softmax:
                     scores_ = scores_.to(torch.float32)
                     softplus_x = F.softplus(scores_, threshold=15.0)
@@ -796,17 +819,15 @@ class ChunkingLayer(nn.Module):
             
             mem_k = self.proj_k(enc_hiddens)  # (N, C, S, dim)
             mem_v = self.proj_v(enc_hiddens)
-
-            # print(f'batch hiddens: {x_[:, :4, :4]}')
             
             mem_k = rearrange(mem_k, 'N C S (h d)->N (C S) h d', h=self.num_kv_heads)
             if self.enable_qk_norm:
                 mem_k = self.k_rmsnorm(mem_k)
             mem_v = rearrange(mem_v, 'N C S (h d)->N (C S) h d', h=self.num_kv_heads)
 
-
             return hidden_states, weights, mem_k.contiguous(), mem_v.contiguous(), landmarks.contiguous(), None
         else:
+
             kv_mgr = cache_params.mem_mgr
             # assert self.layer_idx in cache_params.key_value_memory_dict
             if self.layer_idx not in cache_params.key_value_memory_dict:
@@ -819,7 +840,7 @@ class ChunkingLayer(nn.Module):
 
         
             current_hidden_cache, cache_lens = cache_params.key_value_memory_dict[self.layer_idx]
-            
+
             max_L = hidden_states.shape[1]
             N = hidden_states.shape[0]
             # print(attention_mask.shape)
@@ -833,12 +854,12 @@ class ChunkingLayer(nn.Module):
                     else:
                         kv_mgr.padding_lens += padding_lens
             else:
+                # L = [hidden_states.shape[1]] * N
                 L = torch.zeros(N, device=hidden_states.device, dtype=torch.long)
                 L.fill_(hidden_states.shape[1])
 
             concat_lens = L + cache_lens
             chunk_filled = concat_lens >= self.chunk_size
-            # print(f'non zero: {chunk_filled.nonzero()}')
             b_ids = chunk_filled.nonzero().squeeze(1)
             truncate_lens = concat_lens % self.chunk_size
             if torch.any(chunk_filled):
@@ -860,6 +881,7 @@ class ChunkingLayer(nn.Module):
                         )
                     # (64 * ?, dim)
                     chunk_hidden_states = rearrange(chunk_hidden_states, '(N S) d->N S d', S=self.chunk_size)
+                    # print(f'bid: {b_id}, pos: {cache_position[0]} chunked repr: {chunk_hidden_states[:, :4, :8]}')
                     chunk_nums.append(chunk_hidden_states.shape[0])
                     chunk_h_list.append(chunk_hidden_states)
                 
@@ -876,12 +898,13 @@ class ChunkingLayer(nn.Module):
                     mem_k = self.k_rmsnorm(mem_k)
                     mem_k = rearrange(mem_k, 'N S h d->N S (h d)')
                 mem_v = self.proj_v(enc_hiddens).squeeze(1)
+
                 kv_mgr.append_varlen(b_ids, chunk_nums, mem_k, mem_v, landmarks.squeeze(1))
-            
-            # update hidden cache
+
             cache_lens = truncate_lens
             assert torch.all(cache_lens < self.chunk_size)
             current_hidden_cache.copy_(torch.roll(current_hidden_cache, shifts=-hidden_states.shape[1], dims=-2))
+
             current_hidden_cache[:, -hidden_states.shape[1]:] = hidden_states[:, -self.chunk_size:]
 
             cache_params.key_value_memory_dict[self.layer_idx] = (current_hidden_cache, cache_lens)
