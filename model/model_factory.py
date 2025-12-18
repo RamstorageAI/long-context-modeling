@@ -49,9 +49,10 @@ def create_model(model_type, config_path, lora_config_path=None) -> PreTrainedMo
         from model.modeling_mamba2_nsa import Mamba2ForCausalLM
 
         model = Mamba2ForCausalLM(config=config)
-    elif model_type == 'inf_attn':
-        from model.modeling_qwen_transformers import Qwen2MoeForCausalLM
-        model = Qwen2MoeForCausalLM(config=config)
+    elif model_type == 'swa_hsa':
+        from model.modeling_swa_hsa import DRTForCausalLM
+
+        model = DRTForCausalLM(config=config)
     else:
         raise NotImplementedError(f"model_type: {model_type} is not implemented")
     return model
@@ -111,6 +112,9 @@ def load_pretrained(
         print("from model.modeling_ramba import Mamba2ForCausalLM")
         if peft_adapter_path is not None:
             raise Exception(f"Not not support peft adapter for model_type: {model_type}")
+    elif model_type == 'swa_hsa':
+        from model.modeling_swa_hsa import DRTForCausalLM
+        model = DRTForCausalLM.from_pretrained(checkpoint_path, config=config)
     elif model_type == "mamba_nsa":
         from model.modeling_mamba2_nsa import Mamba2ForCausalLM
 

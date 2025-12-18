@@ -34,6 +34,8 @@ We **scaled up** our **SWA+HSA architecture** and ran evaluations on several **b
 
 ### Environments
 torch==2.4.0, transformers>=4.36.0, triton==3.0.0
+If you need to run SWA+HSA,
+Please install flash-attention==2.8.4
 
 `pip install requirements.txt`
 
@@ -42,7 +44,6 @@ torch==2.4.0, transformers>=4.36.0, triton==3.0.0
 Before pre-training, ensure that the corpus is indexed. Pre-processing script:
 
 Pile: `python preprocess/pile_neox.py`
-
 
 
 ### Unittests
@@ -55,6 +56,16 @@ Test triton kernel:
 ### Pre-training
 
 `sh scripts/pretrain_pile/pretrain_model.sh`
+
+### Eval RULER
+`sh eval/eval_ruler --config_path YOUR_CONFIG_PATH \
+    --vocab_dir YOUR_VOCAB_DIR \
+    --corpus_path TOKENIZED_NUMPY_CORPUS_PATH \
+    --model_type [ramba,swa_hsa] \
+    --task_id [0,1,2] \
+    --max_seq_len TEST_SEQ_LEN \
+    --checkpoint_path PATH_TO_CKPT
+`
 
 
 ### Contact
